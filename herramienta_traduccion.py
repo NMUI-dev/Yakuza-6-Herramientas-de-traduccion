@@ -87,15 +87,36 @@ def poner_ruta(d, ruta, nuevo):
     for k in ks[:-1]: o = o[int(k)] if isinstance(o, list) else o[k]
     o[int(ks[-1]) if isinstance(o, list) else ks[-1]] = nuevo
 
+def huella(archivo):
+    """MD5 de un archivo: identifica de qué versión salió cada copia de trabajo."""
+    import hashlib
+    h = hashlib.md5()
+    with open(archivo, 'rb') as fh:
+        for trozo in iter(lambda: fh.read(1 << 20), b''): h.update(trozo)
+    return h.hexdigest()
+
+def cache_al_dia(origen, cache):
+    """(v1.0.4) True si «cache» (archivo o carpeta) salió de este mismo «origen». Si no, la borra para rehacerla:
+    antes se reutilizaba aunque el origen hubiera cambiado y «extraer» sacaba textos de una versión vieja."""
+    marca = os.path.normpath(cache) + '.origen'
+    if os.path.exists(cache) and os.path.exists(marca) and open(marca).read() == huella(origen): return True
+    if os.path.isdir(cache): shutil.rmtree(cache)
+    elif os.path.exists(cache): os.remove(cache)
+    return False
+
+def marcar_cache(origen, cache):
+    with open(os.path.normpath(cache) + '.origen', 'w') as fh: fh.write(huella(origen))
+
 def exportar_armp(bin_origen, carpeta):
     """Tabla ARMP (.bin) -> JSON con reARMP. Devuelve el diccionario."""
     os.makedirs(carpeta, exist_ok=True)
     nombre = os.path.basename(bin_origen); js = os.path.join(carpeta, nombre + '.json')
-    if not os.path.exists(js):
+    if not cache_al_dia(bin_origen, js):
         shutil.copy(bin_origen, os.path.join(carpeta, nombre))
         subprocess.run([sys.executable, REARMP, nombre], cwd=carpeta, stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, check=True)
         os.remove(os.path.join(carpeta, nombre))
+        marcar_cache(bin_origen, js)
     return json.load(open(js, encoding='utf-8'))
 
 def buscar_juego():
@@ -179,7 +200,7 @@ def extraer():
     print('Diálogos de subhistorias y minijuegos (talk.par)... (medio minuto por cada talk.par)')
     for lado, par in (('en', os.path.join(d_en, 'talk.par')), ('es', os.path.join(ARCHIVOS, 'talk.par'))):
         dest = os.path.join(TRABAJO, lado, 'talk_todo')
-        if not os.path.isdir(dest): partool('extract', '-r', par, dest)
+        if not cache_al_dia(par, dest): partool('extract', '-r', par, dest); marcar_cache(par, dest)
     for f in indice_talk() + [dict(g, escena=g['ruta']) for g in indice_cmn() if g['contenedor'] == 'talk']:
         rel = os.path.join(f['escena'], 'cmn.par', 'cmn.bin'); off = int(f['offset'])
         en = leer_cmn(os.path.join(TRABAJO, 'en', 'talk_todo', rel), off)
@@ -192,7 +213,7 @@ def extraer():
         textos = []
         for lado, par in (('en', par_en), ('es', par_es if os.path.exists(par_es) else par_en)):
             dest = os.path.join(TRABAJO, lado, 'sueltos', g['ruta'])
-            if not os.path.isdir(dest): partool('extract', '-r', par, dest)
+            if not cache_al_dia(par, dest): partool('extract', '-r', par, dest); marcar_cache(par, dest)
             textos.append(leer_cmn(os.path.join(dest, 'cmn.par', 'cmn.bin'), int(g['offset'])))
         anotar(textos[0], textos[1] if textos[1] != textos[0] else '', 'escena | ' + g['ruta'], int(g['bytes_max']))
     with open(CSV_TEXTOS, 'w', encoding='utf-8-sig', newline='') as fh:
@@ -247,7 +268,8 @@ def aplicar():
     print(f'  {n_db} textos en {len(tablas())} tablas')
     print('Diálogos (talk.par)... (tarda: se rearma escena por escena)')
     capas = os.path.join(TRABAJO, 'en', 'talk_escenas')
-    if not os.path.isdir(capas): partool('extract', os.path.join(d_en, 'talk.par'), capas)
+    if not cache_al_dia(os.path.join(d_en, 'talk.par'), capas):
+        partool('extract', os.path.join(d_en, 'talk.par'), capas); marcar_cache(os.path.join(d_en, 'talk.par'), capas)
     por_escena = collections.defaultdict(list)
     for f in indice_talk(): por_escena[f['escena']].append(f)
     for g in indice_cmn():
